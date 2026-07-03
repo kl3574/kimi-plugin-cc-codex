@@ -43,7 +43,7 @@ Use the skill cc-codex-adversarial-review with base main
 
 ## How It Works
 
-The helper script builds a single git diff (staged + unstaged + untracked warnings, or against a base ref), then runs Claude and Codex reviews in parallel. Claude is invoked with `--permission-mode plan` (read-only tools only), and Codex is invoked with `exec -s read-only --ignore-user-config --ephemeral`. Both receive the same diff and any focus text in their prompts. The combined output is printed under per-engine headings followed by a short summary. Each engine has a 5-minute timeout and a 32 MB output buffer.
+The helper script builds a single git diff (staged + unstaged + untracked files, or against a base ref), then runs Claude and Codex reviews in parallel. Claude is invoked with `--permission-mode plan` (read-only tools only), and Codex is invoked with `exec -s read-only --ignore-user-config --ephemeral`. Both receive the same diff and any focus text in their prompts. The combined output is printed under per-engine headings followed by a short summary. Each engine has a 5-minute timeout and a 32 MB output buffer.
 
 ## Verification
 
@@ -57,14 +57,14 @@ The helper script builds a single git diff (staged + unstaged + untracked warnin
   - Invalid base ref → clear git error, exit 1.
   - No commits yet → clear error, exit 1.
   - Staged changes only → reviewed as part of the working-tree diff, exit 0.
-  - Untracked files → warning in summary, but not included in the diff sent to Claude.
+  - Untracked files → included in the diff sent to both engines.
 
 ## Limitations
 
 - Requires a local git repository with at least one commit (for non-base reviews).
 - Requires both `claude` and `codex` on PATH and authenticated.
 - Very large diffs sent to Claude are truncated.
-- Untracked files are reported but not included in the diff sent to either engine.
+- Untracked files are included in the diff sent to either engine.
 - Does **not** implement background execution (`--background`, `--wait`), rescue/transfer/status/result/cancel commands, or the review gate from `codex-plugin-cc`.
 - Skills and commands resolve the helper script via `PLUGIN_ROOT` using `KIMI_PLUGIN_ROOT`, `KIMI_CODE_HOME`, or the default `~/.kimi-code/plugins/managed/kimi-plugin-cc-codex` path.
 - This is a v0.1 local prototype.

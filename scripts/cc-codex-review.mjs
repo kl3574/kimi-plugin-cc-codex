@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const USAGE = `Usage: cc-codex-review.mjs <setup|review|adversarial-review> [--base <ref>] [--focus <text>]
   review: read-only code review
@@ -23,31 +25,45 @@ function runGit(args, opts = {}) {
 
 function runAsync(cmd, args, opts = {}) {
   const { stdin, timeout = 5 * 60 * 1000, maxBuffer = 32 * 1024 * 1024, ...spawnOpts } = opts;
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const child = spawn(cmd, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout,
       ...spawnOpts,
     });
     let stdout = '';
     let stderr = '';
     let killed = false;
+    let timedOut = false;
+    const timer = timeout
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill('SIGTERM');
+        }, timeout)
+      : null;
     child.stdout.on('data', (data) => {
       stdout += data.toString();
-      if (Buffer.byteLength(stdout, 'utf8') > maxBuffer && !killed) {
+      if (Buffer.byteLength(stdout, 'utf8') > maxBuffer && !killed && !timedOut) {
         killed = true;
         child.kill('SIGTERM');
       }
     });
     child.stderr.on('data', (data) => {
       stderr += data.toString();
-      if (Buffer.byteLength(stderr, 'utf8') > maxBuffer && !killed) {
+      if (Buffer.byteLength(stderr, 'utf8') > maxBuffer && !killed && !timedOut) {
         killed = true;
         child.kill('SIGTERM');
       }
     });
-    child.on('error', reject);
+    child.on('error', (err) => {
+      if (timer) clearTimeout(timer);
+      resolve({ code: 1, stdout, stderr: `❌ Failed to start ${cmd}: ${err.message}` });
+    });
     child.on('close', (code, signal) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        resolve({ code: 1, stdout, stderr: stderr + '\n❌ Review timed out after 5 minutes.' });
+        return;
+      }
       if (signal === 'SIGTERM' && killed) {
         resolve({ code: 1, stdout, stderr: stderr + '\n❌ Output exceeded maxBuffer limit.' });
         return;
@@ -73,11 +89,65 @@ function hasCommits(cwd) {
 }
 
 function getUntrackedFiles(cwd) {
-  const result = runGit(['status', '--porcelain'], { cwd });
-  return result.stdout
-    .split('\n')
-    .filter((line) => line.startsWith('??'))
-    .map((line) => line.slice(3).trim());
+  const result = runGit(['ls-files', '-z', '--others', '--exclude-standard'], { cwd });
+  if (result.status !== 0) return [];
+  return result.stdout.split('\0').filter(Boolean);
+}
+
+const MAX_UNTRACKED_BYTES = 1024 * 1024; // 1 MB per untracked file
+
+function readRepoFile(cwd, file) {
+  const fullPath = path.join(cwd, file);
+  try {
+    const stat = fs.lstatSync(fullPath);
+    if (!stat.isFile()) {
+      return { skipped: true, reason: 'not a regular file' };
+    }
+    if (stat.size > MAX_UNTRACKED_BYTES) {
+      return { skipped: true, reason: 'file too large' };
+    }
+    return { content: fs.readFileSync(fullPath, 'utf8') };
+  } catch {
+    return { skipped: true, reason: 'read error' };
+  }
+}
+
+function formatUntrackedDiff(cwd) {
+  const files = getUntrackedFiles(cwd);
+  if (files.length === 0) return '';
+  const parts = [];
+  const skipped = [];
+  for (const file of files) {
+    const result = readRepoFile(cwd, file);
+    if (result.skipped) {
+      skipped.push(`${file} (${result.reason})`);
+      continue;
+    }
+    const content = result.content;
+    const lines = content.split('\n');
+    parts.push(`diff --git a/${file} b/${file}`);
+    parts.push('new file mode 100644');
+    parts.push('index 0000000..0000000');
+    parts.push('--- /dev/null');
+    parts.push(`+++ b/${file}`);
+    parts.push(`@@ -0,0 +1,${lines.length} @@`);
+    for (const line of lines) {
+      parts.push(`+${line}`);
+    }
+  }
+  if (skipped.length) {
+    parts.push(`\n# Skipped untracked files: ${skipped.join(', ')}`);
+  }
+  return parts.join('\n');
+}
+
+function buildReviewDiff(base, cwd) {
+  const trackedDiff = getDiff(base, cwd);
+  const untrackedDiff = formatUntrackedDiff(cwd);
+  if (!untrackedDiff) {
+    return trackedDiff;
+  }
+  return [trackedDiff, untrackedDiff].filter(Boolean).join('\n');
 }
 
 function checkGitDiff(result, label) {
@@ -86,9 +156,25 @@ function checkGitDiff(result, label) {
   }
 }
 
+function sanitizePromptInput(s) {
+  return String(s || '').replace(/[\n\r]/g, ' ').replace(/```/g, "'''").trim();
+}
+
+function validateBaseRef(base) {
+  if (base === undefined || base === null) return;
+  if (base.trim() === '') {
+    throw new Error('--base requires a non-empty ref');
+  }
+  if (base.startsWith('-')) {
+    throw new Error('--base value cannot start with "-"');
+  }
+}
+
 function getDiff(base, cwd) {
   if (base) {
-    const result = runGit(['diff', '--no-color', `${base}..HEAD`, '--'], { cwd });
+    // Compare the base ref directly to the working tree so the review covers
+    // both committed branch changes and local edits, without duplication.
+    const result = runGit(['diff', '--no-color', base, '--'], { cwd });
     checkGitDiff(result, 'base');
     return result.stdout;
   }
@@ -125,8 +211,24 @@ function splitArgsString(s) {
 }
 
 function normalizeArgv(argv) {
-  const raw = argv.slice(2).join(' ');
-  return raw.length > 0 ? splitArgsString(raw) : [];
+  // When invoked from the Kimi Code command wrapper, arguments arrive as a
+  // single quoted string in REVIEW_ARGS (avoids shell interpolation of user
+  // input). The subcommand (review/adversarial-review/setup) is still passed
+  // as argv[2], so we prepend it to any env-var flags.
+  const envArgs = process.env.REVIEW_ARGS;
+  const args = argv.slice(2).filter((a) => a.length > 0);
+  let tokens = [];
+  if (envArgs !== undefined) {
+    tokens = envArgs.length > 0 ? splitArgsString(envArgs) : [];
+  } else if (args.length === 1 && /\s/.test(args[0])) {
+    tokens = splitArgsString(args[0]);
+  } else {
+    tokens = args;
+  }
+  if (args.length > 0 && args[0] !== tokens[0]) {
+    tokens = [args[0], ...tokens];
+  }
+  return tokens;
 }
 
 function parseArgs(argv) {
@@ -245,6 +347,9 @@ async function runCodexReview({ base, focus, adversarial, gitRoot, diff }) {
   if (focus) {
     promptLines.push(`Focus: ${focus}`);
   }
+  if (base) {
+    promptLines.push(`Base ref: ${base}`);
+  }
   promptLines.push(
     'Categorize findings as Critical, Important, or Minor.',
     'For each finding include severity, file:line, evidence, why it matters, and a recommended fix.',
@@ -270,13 +375,16 @@ async function review(options) {
   }
 
   let effectiveFocus = options.focus;
-  if (options.adversarial && !effectiveFocus && options.positional && options.positional.length) {
+  if (options.adversarial && options.positional && options.positional.length) {
+    if (effectiveFocus) {
+      console.error('❌ Cannot use positional focus text together with --focus.');
+      process.exit(1);
+    }
     effectiveFocus = options.positional.join(' ');
   } else if (options.positional && options.positional.length) {
     console.error(`❌ Unexpected positional argument(s): ${options.positional.join(' ')}`);
     process.exit(1);
   }
-  options = { ...options, focus: effectiveFocus };
 
   const gitRoot = findGitRoot();
   if (!gitRoot) {
@@ -284,8 +392,21 @@ async function review(options) {
     process.exit(1);
   }
 
-  if (options.base !== null && options.base.trim() === '') {
-    console.error('❌ --base requires a non-empty ref.');
+  const claude = checkCli('claude', ['--version'], ['auth', 'status'], (r) => r.status === 0);
+  const codex = checkCli('codex', ['--version'], ['login', 'status'], (r) => {
+    const output = (r.stdout || '') + (r.stderr || '');
+    return r.status === 0 && /\bLogged in\b/.test(output);
+  });
+  if (!claude.ok || !codex.ok) {
+    console.error(claude.message);
+    console.error(codex.message);
+    process.exit(1);
+  }
+
+  try {
+    validateBaseRef(options.base);
+  } catch (err) {
+    console.error(`❌ ${err.message}`);
     process.exit(1);
   }
 
@@ -296,20 +417,19 @@ async function review(options) {
 
   let diff;
   try {
-    diff = getDiff(options.base, gitRoot);
+    diff = buildReviewDiff(options.base, gitRoot);
   } catch (err) {
     console.error(`❌ ${err.message}`);
     process.exit(1);
   }
 
-  const untracked = options.base ? [] : getUntrackedFiles(gitRoot);
-  const untrackedWarning = untracked.length
-    ? `⚠️ ${untracked.length} untracked file(s) are not included in this review: ${untracked.join(', ')}`
-    : '';
+  const displayBase = sanitizePromptInput(options.base);
+  const displayFocus = sanitizePromptInput(effectiveFocus);
+  const reviewOptions = { ...options, focus: displayFocus, base: displayBase, gitRoot, diff };
 
   const [claudeResult, codexResult] = await Promise.all([
-    runClaudeReview({ ...options, gitRoot, diff }),
-    runCodexReview({ ...options, gitRoot, diff }),
+    runClaudeReview(reviewOptions),
+    runCodexReview(reviewOptions),
   ]);
 
   console.log('# Combined Claude + Codex Code Review\n');
@@ -321,9 +441,6 @@ async function review(options) {
   console.log(codexResult.ok ? codexResult.output : `Failed: ${codexResult.output}`);
   console.log('\n---\n');
   console.log('## Summary\n');
-  if (untrackedWarning) {
-    console.log(untrackedWarning);
-  }
   if (!diff.trim()) {
     console.log('No changes to review.');
   } else if (claudeResult.ok && codexResult.ok) {
