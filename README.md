@@ -4,19 +4,20 @@ A Kimi Code plugin that runs independent read-only code reviews from both Claude
 
 ## Install
 
-From a local path:
-
-```text
-/plugins install /home/lkx/kimi-plugin-cc-codex
-/reload
-```
-
-From GitHub:
+From GitHub (recommended):
 
 ```text
 /plugins install https://github.com/kl3574/kimi-plugin-cc-codex
 /reload
 ```
+
+Or clone manually into your Kimi Code plugins directory:
+
+```bash
+git clone https://github.com/kl3574/kimi-plugin-cc-codex.git ~/.kimi-code/plugins/managed/kimi-plugin-cc-codex
+```
+
+Then restart Kimi Code or run `/reload`.
 
 ## Usage
 
@@ -65,5 +66,5 @@ The helper script runs Claude review and Codex review in parallel, then prints b
 - Very large diffs sent to Claude are truncated.
 - Untracked files are reported but not reviewed by Claude; Codex may see them via its own `codex review` behavior.
 - Does **not** implement background execution (`--background`, `--wait`), rescue/transfer/status/result/cancel commands, or the review gate from `codex-plugin-cc`.
-- Skills and commands reference the helper script by absolute path `/home/lkx/.kimi-code/plugins/managed/kimi-plugin-cc-codex/scripts/cc-codex-review.mjs`.
+- Skills and commands reference the helper script relative to the plugin root. If you move the plugin directory, reinstall it so the paths resolve correctly.
 - This is a v0.1 local prototype.
