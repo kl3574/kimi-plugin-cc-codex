@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const USAGE = `Usage: cc-codex-review.mjs <setup|review|adversarial-review> [--base <ref>] [--focus <text>]
   review: read-only code review
@@ -23,19 +22,36 @@ function runGit(args, opts = {}) {
 }
 
 function runAsync(cmd, args, opts = {}) {
-  const stdin = opts.stdin;
-  delete opts.stdin;
+  const { stdin, timeout = 5 * 60 * 1000, maxBuffer = 32 * 1024 * 1024, ...spawnOpts } = opts;
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      ...opts,
+      timeout,
+      ...spawnOpts,
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (data) => { stdout += data.toString(); });
-    child.stderr.on('data', (data) => { stderr += data.toString(); });
+    let killed = false;
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+      if (Buffer.byteLength(stdout, 'utf8') > maxBuffer && !killed) {
+        killed = true;
+        child.kill('SIGTERM');
+      }
+    });
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+      if (Buffer.byteLength(stderr, 'utf8') > maxBuffer && !killed) {
+        killed = true;
+        child.kill('SIGTERM');
+      }
+    });
     child.on('error', reject);
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
+      if (signal === 'SIGTERM' && killed) {
+        resolve({ code: 1, stdout, stderr: stderr + '\n❌ Output exceeded maxBuffer limit.' });
+        return;
+      }
       resolve({ code, stdout, stderr });
     });
     if (stdin !== undefined) {
@@ -64,19 +80,25 @@ function getUntrackedFiles(cwd) {
     .map((line) => line.slice(3).trim());
 }
 
+function checkGitDiff(result, label) {
+  if (result.status !== 0) {
+    throw new Error(`git diff (${label}) failed: ${result.stderr || result.error?.message || 'unknown error'}`);
+  }
+}
+
 function getDiff(base, cwd) {
   if (base) {
-    const result = runGit(['diff', '--no-color', `${base}...HEAD`, '--'], { cwd });
-    if (result.status !== 0) {
-      throw new Error(`git diff failed: ${result.stderr}`);
-    }
+    const result = runGit(['diff', '--no-color', `${base}..HEAD`, '--'], { cwd });
+    checkGitDiff(result, 'base');
     return result.stdout;
   }
   // Combine staged and unstaged diffs separately so that working-tree changes
   // that cancel out staged changes do not hide the staged patch.
-  const unstaged = runGit(['diff', '--no-color'], { cwd }).stdout;
-  const staged = runGit(['diff', '--cached', '--no-color'], { cwd }).stdout;
-  return [staged, unstaged].filter(Boolean).join('\n');
+  const unstaged = runGit(['diff', '--no-color'], { cwd });
+  checkGitDiff(unstaged, 'unstaged');
+  const staged = runGit(['diff', '--cached', '--no-color'], { cwd });
+  checkGitDiff(staged, 'staged');
+  return [staged.stdout, unstaged.stdout].filter(Boolean).join('\n');
 }
 
 function splitArgsString(s) {
@@ -88,7 +110,11 @@ function splitArgsString(s) {
     let token = '';
     if (s[i] === '"' || s[i] === "'") {
       const quote = s[i++];
-      while (i < s.length && s[i] !== quote) token += s[i++];
+      while (i < s.length && s[i] !== quote) {
+        if (s[i] === '\\' && i + 1 < s.length) token += s[++i];
+        else token += s[i];
+        i++;
+      }
       if (i < s.length) i++;
     } else {
       while (i < s.length && !/\s/.test(s[i])) token += s[i++];
@@ -99,13 +125,8 @@ function splitArgsString(s) {
 }
 
 function normalizeArgv(argv) {
-  let args = argv.slice(2);
-  if (args.length === 1 && args[0].length > 0) {
-    args = splitArgsString(args[0]);
-  } else if (args.length === 1 && args[0].length === 0) {
-    args = [];
-  }
-  return args;
+  const raw = argv.slice(2).join(' ');
+  return raw.length > 0 ? splitArgsString(raw) : [];
 }
 
 function parseArgs(argv) {
@@ -141,11 +162,11 @@ function parseArgs(argv) {
 }
 
 function checkCli(name, versionArgs, authCmd, authOk) {
-  const which = runSync('which', [name]);
-  if (which.status !== 0 || !which.stdout.trim()) {
-    return { ok: false, message: `❌ ${name} not found on PATH.` };
+  const versionResult = runSync(name, versionArgs);
+  if (versionResult.status !== 0) {
+    return { ok: false, message: `❌ ${name} not found on PATH or failed to run.` };
   }
-  const version = runSync(name, versionArgs).stdout.trim();
+  const version = versionResult.stdout.trim();
   const auth = runSync(name, authCmd);
   if (!authOk(auth)) {
     return { ok: false, message: `❌ ${name} (${version}) is not authenticated.` };
@@ -157,7 +178,7 @@ function setup() {
   const claude = checkCli('claude', ['--version'], ['auth', 'status'], (r) => r.status === 0);
   const codex = checkCli('codex', ['--version'], ['login', 'status'], (r) => {
     const output = (r.stdout || '') + (r.stderr || '');
-    return r.status === 0 && output.includes('Logged in');
+    return r.status === 0 && /\bLogged in\b/.test(output);
   });
   console.log(claude.message);
   console.log(codex.message);
@@ -173,32 +194,34 @@ async function runClaudeReview({ base, focus, adversarial, gitRoot, diff }) {
   }
 
   const maxDiffChars = 120000;
-  let truncated = diff.length > maxDiffChars;
+  const codePoints = [...diff];
+  let truncated = codePoints.length > maxDiffChars;
   if (truncated) {
-    diff = diff.slice(0, maxDiffChars) + '\n\n[diff truncated]';
+    diff = codePoints.slice(0, maxDiffChars).join('') + '\n\n[diff truncated]';
   }
 
   const systemPrompt = adversarial
     ? `You are a senior staff engineer doing a read-only adversarial code review. Challenge design decisions, trade-offs, hidden assumptions, and failure modes. Be constructive but skeptical. Categorize findings as Critical, Important, or Minor. For each finding include severity, file:line, evidence, why it matters, and a recommended fix. End with an overall verdict.`
     : `You are a senior staff engineer doing a read-only code review. Categorize findings as Critical, Important, or Minor. For each finding include severity, file:line, evidence, why it matters, and a recommended fix. End with an overall verdict.`;
 
+  const fence = diff.includes('```') ? '````' : '```';
   const userPrompt = [
     'Review the following git diff.',
     base ? `Base ref: ${base}` : 'Reviewing current uncommitted changes.',
     focus ? `Focus: ${focus}` : '',
     '',
-    '```diff',
+    `${fence}diff`,
     diff,
-    '```',
-  ].join('\n');
+    fence,
+  ].filter(Boolean).join('\n');
 
   const result = await runAsync('claude', [
     '-p', userPrompt,
     '--output-format', 'text',
     '--bare',
-    '--permission-mode', 'auto',
+    '--permission-mode', 'plan',
     '--system-prompt', systemPrompt,
-  ], { cwd: gitRoot });
+  ], { cwd: gitRoot, maxBuffer: 32 * 1024 * 1024, timeout: 5 * 60 * 1000 });
 
   let output = result.stdout;
   if (truncated) {
@@ -212,33 +235,30 @@ async function runCodexReview({ base, focus, adversarial, gitRoot, diff }) {
     return { engine: 'Codex', ok: true, output: 'No changes to review.' };
   }
 
-  let result;
-  if (adversarial || focus) {
-    const prompt = [
-      'You are a senior staff engineer doing a read-only code review.',
-      adversarial ? 'Challenge design decisions, trade-offs, hidden assumptions, and failure modes. Be constructive but skeptical.' : '',
-      focus ? `Focus: ${focus}` : '',
-      'Categorize findings as Critical, Important, or Minor.',
-      'For each finding include severity, file:line, evidence, why it matters, and a recommended fix.',
-      'End with an overall verdict.',
-    ].join('\n');
-
-    result = await runAsync('codex', [
-      'exec',
-      '-s', 'read-only',
-      '--ignore-user-config',
-      '--ephemeral',
-      prompt,
-    ], { cwd: gitRoot, stdin: diff });
-  } else {
-    const args = ['review'];
-    if (base) {
-      args.push('--base', base);
-    } else {
-      args.push('--uncommitted');
-    }
-    result = await runAsync('codex', args, { cwd: gitRoot });
+  const promptLines = [
+    'You are a senior staff engineer doing a read-only code review.',
+    'Review the git diff provided on stdin. Do not modify any files.',
+  ];
+  if (adversarial) {
+    promptLines.push('Challenge design decisions, trade-offs, hidden assumptions, and failure modes. Be constructive but skeptical.');
   }
+  if (focus) {
+    promptLines.push(`Focus: ${focus}`);
+  }
+  promptLines.push(
+    'Categorize findings as Critical, Important, or Minor.',
+    'For each finding include severity, file:line, evidence, why it matters, and a recommended fix.',
+    'End with an overall verdict.',
+  );
+  const prompt = promptLines.join('\n');
+
+  const result = await runAsync('codex', [
+    'exec',
+    '-s', 'read-only',
+    '--ignore-user-config',
+    '--ephemeral',
+    prompt,
+  ], { cwd: gitRoot, stdin: diff, maxBuffer: 32 * 1024 * 1024, timeout: 5 * 60 * 1000 });
 
   return { engine: 'Codex', ok: result.code === 0, output: result.code === 0 ? result.stdout : result.stderr };
 }
@@ -304,7 +324,9 @@ async function review(options) {
   if (untrackedWarning) {
     console.log(untrackedWarning);
   }
-  if (claudeResult.ok && codexResult.ok) {
+  if (!diff.trim()) {
+    console.log('No changes to review.');
+  } else if (claudeResult.ok && codexResult.ok) {
     console.log('Both engines completed. Review the findings above and apply fixes in a separate step if needed.');
   } else {
     console.log('One or both engines failed. See details above.');
