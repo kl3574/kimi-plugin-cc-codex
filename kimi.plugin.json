@@ -1,0 +1,13 @@
+{
+  "name": "kimi-plugin-cc-codex",
+  "version": "0.1.0",
+  "description": "Read-only combined Claude Code + Codex CLI review from inside Kimi Code",
+  "keywords": ["claude", "codex", "code-review", "review"],
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "interface": {
+    "displayName": "Kimi Plugin CC + Codex",
+    "shortDescription": "Claude + Codex combined review inside Kimi Code",
+    "developerName": "Local"
+  }
+}
