@@ -6,16 +6,19 @@ const USAGE = `Usage: cc-codex-review.mjs <setup|review|adversarial-review> [--b
   review: read-only code review
   adversarial-review: steerable challenge review`;
 
-function gitEnv() {
-  return { ...process.env, LC_ALL: 'C' };
-}
-
 function runSync(cmd, args, opts = {}) {
   return spawnSync(cmd, args, {
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: gitEnv(),
     ...opts,
+  });
+}
+
+function runGit(args, opts = {}) {
+  const { env: callerEnv, ...restOpts } = opts;
+  return runSync('git', args, {
+    env: { ...process.env, LC_ALL: 'C', ...callerEnv },
+    ...restOpts,
   });
 }
 
@@ -43,18 +46,18 @@ function runAsync(cmd, args, opts = {}) {
 }
 
 function findGitRoot(cwd = process.cwd()) {
-  const result = runSync('git', ['rev-parse', '--show-toplevel'], { cwd });
+  const result = runGit(['rev-parse', '--show-toplevel'], { cwd });
   if (result.status !== 0) return null;
   return result.stdout.trim();
 }
 
 function hasCommits(cwd) {
-  const result = runSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd });
+  const result = runGit(['rev-parse', '--verify', 'HEAD'], { cwd });
   return result.status === 0;
 }
 
 function getUntrackedFiles(cwd) {
-  const result = runSync('git', ['status', '--porcelain'], { cwd });
+  const result = runGit(['status', '--porcelain'], { cwd });
   return result.stdout
     .split('\n')
     .filter((line) => line.startsWith('??'))
@@ -62,18 +65,18 @@ function getUntrackedFiles(cwd) {
 }
 
 function getDiff(base, cwd) {
-  const args = ['diff', '--no-color'];
   if (base) {
-    args.push(`${base}...HEAD`, '--');
-  } else {
-    // Review both staged and unstaged changes relative to HEAD.
-    args.push('HEAD', '--');
+    const result = runGit(['diff', '--no-color', `${base}...HEAD`, '--'], { cwd });
+    if (result.status !== 0) {
+      throw new Error(`git diff failed: ${result.stderr}`);
+    }
+    return result.stdout;
   }
-  const result = runSync('git', args, { cwd });
-  if (result.status !== 0) {
-    throw new Error(`git diff failed: ${result.stderr}`);
-  }
-  return result.stdout;
+  // Combine staged and unstaged diffs separately so that working-tree changes
+  // that cancel out staged changes do not hide the staged patch.
+  const unstaged = runGit(['diff', '--no-color'], { cwd }).stdout;
+  const staged = runGit(['diff', '--cached', '--no-color'], { cwd }).stdout;
+  return [staged, unstaged].filter(Boolean).join('\n');
 }
 
 function parseArgs(argv) {
