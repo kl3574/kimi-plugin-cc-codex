@@ -23,6 +23,8 @@ Use this skill when the user wants a combined Claude + Codex review of their cur
    - `node "$PLUGIN_ROOT/scripts/cc-codex-review.mjs" review --base main`
    - `node "$PLUGIN_ROOT/scripts/cc-codex-review.mjs" review --focus "security"`
    - `node "$PLUGIN_ROOT/scripts/cc-codex-review.mjs" review --base main --focus "error handling"`
+   - `node "$PLUGIN_ROOT/scripts/cc-codex-review.mjs" review --path src/utils.js`
+   - `node "$PLUGIN_ROOT/scripts/cc-codex-review.mjs" review --path src`
 3. Run the command and show the full output. Do not modify any files.
 4. Present the findings to the user, preserving severity headings.
 5. Do not apply any fixes unless the user explicitly asks in a separate step.

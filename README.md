@@ -23,8 +23,12 @@ Then restart Kimi Code or run `/reload`.
 
 ```text
 /kimi-plugin-cc-codex:setup
+/kimi-plugin-cc-codex:doctor
+/kimi-plugin-cc-codex:doctor --probe-runtime
 /kimi-plugin-cc-codex:review
 /kimi-plugin-cc-codex:review --base main
+/kimi-plugin-cc-codex:review --path src/utils.js
+/kimi-plugin-cc-codex:review --path src --focus "error handling"
 /kimi-plugin-cc-codex:adversarial-review
 /kimi-plugin-cc-codex:adversarial-review --base main --focus "challenge the error handling"
 ```
@@ -43,7 +47,24 @@ Use the skill cc-codex-adversarial-review with base main
 
 ## How It Works
 
-The helper script builds a single git diff (staged + unstaged + untracked files, or against a base ref), then runs Claude and Codex reviews in parallel. Claude is invoked with `--permission-mode plan` (read-only tools only), and Codex is invoked with `exec -s read-only --ignore-user-config --ephemeral`. Both receive the same diff and any focus text in their prompts. The combined output is printed under per-engine headings followed by a short summary. Each engine has a 5-minute timeout and a 32 MB output buffer.
+The helper script builds a single git diff, then runs Claude and Codex reviews in parallel.
+
+- Default (no `--base`): staged + unstaged + untracked files, rendered as a single review input sent to both engines. Untracked files are included only in the default working-tree review.
+- `--base <ref>`: computes `git merge-base <ref> HEAD` and reviews only the committed branch changes since that merge-base (`<merge-base>..HEAD`); untracked files are excluded.
+- `--path <file-or-dir>`: restricts the diff to the given file or directory before sending it to both engines.
+
+## Diagnostics
+
+Run `/kimi-plugin-cc-codex:doctor` to check:
+
+- Plugin-local environment (Node.js version, git repo, writable directories).
+- Whether `claude` and `codex` are on PATH, their versions, and authentication status.
+- Proxy environment variables and proxy socket reachability.
+- Direct connectivity to `api.anthropic.com:443` and `api.openai.com:443`.
+
+Add `--probe-runtime` to send a minimal prompt to each engine and confirm the API paths work end-to-end. If either external CLI fails, the plugin prints the real CLI exit code/signal and stderr under the corresponding engine heading and exits without fabricating a review.
+
+Claude is invoked with `--permission-mode plan` (read-only tools only), and Codex is invoked with `exec -s read-only --ignore-user-config --ephemeral`. Both receive the same diff and any focus text in their prompts. The combined output is printed under per-engine headings followed by a short summary. Each engine has a 5-minute timeout and a 32 MB output buffer.
 
 ## Verification
 
@@ -64,7 +85,7 @@ The helper script builds a single git diff (staged + unstaged + untracked files,
 - Requires a local git repository with at least one commit (for non-base reviews).
 - Requires both `claude` and `codex` on PATH and authenticated.
 - Very large diffs sent to Claude are truncated.
-- Untracked files are included in the diff sent to either engine.
+- Untracked files are included in the diff sent to both engines, up to 500 KB per file and 1 MB total across all untracked files.
 - Does **not** implement background execution (`--background`, `--wait`), rescue/transfer/status/result/cancel commands, or the review gate from `codex-plugin-cc`.
 - Skills and commands resolve the helper script via `PLUGIN_ROOT` using `KIMI_PLUGIN_ROOT`, `KIMI_CODE_HOME`, or the default `~/.kimi-code/plugins/managed/kimi-plugin-cc-codex` path.
 - This is a v0.1 local prototype.
