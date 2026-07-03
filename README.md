@@ -66,5 +66,5 @@ The helper script runs Claude review and Codex review in parallel, then prints b
 - Very large diffs sent to Claude are truncated.
 - Untracked files are reported but not reviewed by Claude; Codex may see them via its own `codex review` behavior.
 - Does **not** implement background execution (`--background`, `--wait`), rescue/transfer/status/result/cancel commands, or the review gate from `codex-plugin-cc`.
-- Skills and commands reference the helper script relative to the plugin root. If you move the plugin directory, reinstall it so the paths resolve correctly.
+- Skills and commands resolve the helper script via `PLUGIN_ROOT` using `KIMI_PLUGIN_ROOT`, `KIMI_CODE_HOME`, or the default `~/.kimi-code/plugins/managed/kimi-plugin-cc-codex` path.
 - This is a v0.1 local prototype.

@@ -1,18 +1,30 @@
 ---
 name: cc-codex-adversarial-review
-description: Run a steerable combined adversarial Claude Code + Codex CLI code review from inside Kimi Code
+description: Run skeptical adversarial reviews from both Claude Code and Codex CLI from inside Kimi Code
 ---
 
-# Combined Claude + Codex Adversarial Review
+# Claude + Codex Adversarial Review
 
-Use this skill when the user wants both Claude Code and Codex CLI to challenge the design, trade-offs, or assumptions behind the current changes.
+Use this skill when the user wants a challenging combined Claude + Codex review.
 
 ## Steps
 
-1. Identify any focus area the user provided.
-2. Run the helper script with the focus:
+1. Determine what the user wants to review:
+   - Uncommitted changes (default)
+   - A branch compared to a base ref (e.g., `main`)
+   - Optionally, a focus area such as `security` or `error handling`
+2. Run the helper script:
    ```bash
-   node /home/lkx/.kimi-code/plugins/managed/kimi-plugin-cc-codex/scripts/cc-codex-review.mjs adversarial-review --base main --focus "challenge the retry logic"
+   PLUGIN_ROOT="${KIMI_PLUGIN_ROOT:-${KIMI_CODE_HOME:-$HOME/.kimi-code}/plugins/managed/kimi-plugin-cc-codex}"
+   node "$PLUGIN_ROOT/scripts/cc-codex-review.mjs" adversarial-review "$ARGUMENTS"
    ```
-3. Present the combined findings.
-4. Do not apply fixes automatically.
+   Examples:
+   - `adversarial-review`
+   - `adversarial-review --base main`
+   - `adversarial-review --focus "challenge error handling"`
+3. Present the findings to the user, preserving severity headings.
+4. Do not apply any fixes unless the user explicitly asks in a separate step.
+
+## Output
+
+Claude and Codex each return a markdown report with Critical / Important / Minor findings; the helper concatenates them into a combined report.

@@ -79,10 +79,39 @@ function getDiff(base, cwd) {
   return [staged, unstaged].filter(Boolean).join('\n');
 }
 
+function splitArgsString(s) {
+  const tokens = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (i >= s.length) break;
+    let token = '';
+    if (s[i] === '"' || s[i] === "'") {
+      const quote = s[i++];
+      while (i < s.length && s[i] !== quote) token += s[i++];
+      if (i < s.length) i++;
+    } else {
+      while (i < s.length && !/\s/.test(s[i])) token += s[i++];
+    }
+    tokens.push(token);
+  }
+  return tokens;
+}
+
+function normalizeArgv(argv) {
+  let args = argv.slice(2);
+  if (args.length === 1 && args[0].length > 0) {
+    args = splitArgsString(args[0]);
+  } else if (args.length === 1 && args[0].length === 0) {
+    args = [];
+  }
+  return args;
+}
+
 function parseArgs(argv) {
-  const args = argv.slice(2);
+  const args = normalizeArgv(argv);
   const command = args[0];
-  const options = { base: null, focus: '' };
+  const options = { base: null, focus: '', unknown: [], positional: [] };
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--base') {
       if (i + 1 >= args.length) {
@@ -95,9 +124,17 @@ function parseArgs(argv) {
       }
       options.focus = args[++i];
     } else if (args[i].startsWith('--base=')) {
-      options.base = args[i].slice(7);
+      const value = args[i].slice(7);
+      if (!value) throw new Error('--base requires a value');
+      options.base = value;
     } else if (args[i].startsWith('--focus=')) {
-      options.focus = args[i].slice(8);
+      const value = args[i].slice(8);
+      if (!value) throw new Error('--focus requires a value');
+      options.focus = value;
+    } else if (args[i].startsWith('-')) {
+      options.unknown.push(args[i]);
+    } else {
+      options.positional.push(args[i]);
     }
   }
   return { command, options };
@@ -207,6 +244,20 @@ async function runCodexReview({ base, focus, adversarial, gitRoot, diff }) {
 }
 
 async function review(options) {
+  if (options.unknown && options.unknown.length) {
+    console.error(`❌ Unknown option(s): ${options.unknown.join(', ')}`);
+    process.exit(1);
+  }
+
+  let effectiveFocus = options.focus;
+  if (options.adversarial && !effectiveFocus && options.positional && options.positional.length) {
+    effectiveFocus = options.positional.join(' ');
+  } else if (options.positional && options.positional.length) {
+    console.error(`❌ Unexpected positional argument(s): ${options.positional.join(' ')}`);
+    process.exit(1);
+  }
+  options = { ...options, focus: effectiveFocus };
+
   const gitRoot = findGitRoot();
   if (!gitRoot) {
     console.error('❌ Not inside a git repository.');

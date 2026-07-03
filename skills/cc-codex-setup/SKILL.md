@@ -1,14 +1,21 @@
 ---
 name: cc-codex-setup
-description: Verify that both Claude Code CLI and Codex CLI are installed and authenticated before running combined reviews from Kimi Code
+description: Check that both Claude Code and Codex CLI are installed and authenticated
 ---
 
 # Claude + Codex Setup
 
-Run the setup check and report the result to the user.
+Use this skill when the user wants to verify both CLIs are ready.
 
-```bash
-node /home/lkx/.kimi-code/plugins/managed/kimi-plugin-cc-codex/scripts/cc-codex-review.mjs setup
-```
+## Steps
 
-If it fails, guide the user to install Claude Code from https://claude.ai/code and Codex from https://github.com/openai/codex, then log in to both.
+1. Run the helper script:
+   ```bash
+   PLUGIN_ROOT="${KIMI_PLUGIN_ROOT:-${KIMI_CODE_HOME:-$HOME/.kimi-code}/plugins/managed/kimi-plugin-cc-codex}"
+   node "$PLUGIN_ROOT/scripts/cc-codex-review.mjs" setup
+   ```
+2. Report the result to the user, including any missing CLI or authentication issues.
+
+## Output
+
+The setup command prints a status line for each CLI (e.g., found and authenticated) or a clear error describing what is missing.

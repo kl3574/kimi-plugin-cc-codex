@@ -3,4 +3,9 @@ name: setup
 description: Check Claude and Codex CLI installation and authentication
 ---
 
-Run `node /home/lkx/.kimi-code/plugins/managed/kimi-plugin-cc-codex/scripts/cc-codex-review.mjs setup` and report the result.
+Run the following Bash command and report the result:
+
+```bash
+PLUGIN_ROOT="${KIMI_PLUGIN_ROOT:-${KIMI_CODE_HOME:-$HOME/.kimi-code}/plugins/managed/kimi-plugin-cc-codex}"
+node "$PLUGIN_ROOT/scripts/cc-codex-review.mjs" setup
+```
