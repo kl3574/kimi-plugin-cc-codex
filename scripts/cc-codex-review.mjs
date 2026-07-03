@@ -2,12 +2,19 @@
 import { spawn } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 
-const USAGE = `Usage: cc-codex-review.mjs <setup|review|adversarial-review> [--base <ref>] [--focus <text>]`;
+const USAGE = `Usage: cc-codex-review.mjs <setup|review|adversarial-review> [--base <ref>] [--focus <text>]
+  review: read-only code review
+  adversarial-review: steerable challenge review`;
+
+function gitEnv() {
+  return { ...process.env, LC_ALL: 'C' };
+}
 
 function runSync(cmd, args, opts = {}) {
   return spawnSync(cmd, args, {
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: gitEnv(),
     ...opts,
   });
 }
@@ -41,10 +48,26 @@ function findGitRoot(cwd = process.cwd()) {
   return result.stdout.trim();
 }
 
+function hasCommits(cwd) {
+  const result = runSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd });
+  return result.status === 0;
+}
+
+function getUntrackedFiles(cwd) {
+  const result = runSync('git', ['status', '--porcelain'], { cwd });
+  return result.stdout
+    .split('\n')
+    .filter((line) => line.startsWith('??'))
+    .map((line) => line.slice(3).trim());
+}
+
 function getDiff(base, cwd) {
   const args = ['diff', '--no-color'];
   if (base) {
-    args.push(`${base}...HEAD`);
+    args.push(`${base}...HEAD`, '--');
+  } else {
+    // Review both staged and unstaged changes relative to HEAD.
+    args.push('HEAD', '--');
   }
   const result = runSync('git', args, { cwd });
   if (result.status !== 0) {
@@ -58,9 +81,15 @@ function parseArgs(argv) {
   const command = args[0];
   const options = { base: null, focus: '' };
   for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--base' && i + 1 < args.length) {
+    if (args[i] === '--base') {
+      if (i + 1 >= args.length) {
+        throw new Error('--base requires a value');
+      }
       options.base = args[++i];
-    } else if (args[i] === '--focus' && i + 1 < args.length) {
+    } else if (args[i] === '--focus') {
+      if (i + 1 >= args.length) {
+        throw new Error('--focus requires a value');
+      }
       options.focus = args[++i];
     } else if (args[i].startsWith('--base=')) {
       options.base = args[i].slice(7);
@@ -98,13 +127,7 @@ function setup() {
   }
 }
 
-async function runClaudeReview({ base, focus, adversarial, gitRoot }) {
-  let diff;
-  try {
-    diff = getDiff(base, gitRoot);
-  } catch (err) {
-    return { engine: 'Claude', ok: false, output: err.message };
-  }
+async function runClaudeReview({ base, focus, adversarial, gitRoot, diff }) {
   if (!diff.trim()) {
     return { engine: 'Claude', ok: true, output: 'No changes to review.' };
   }
@@ -144,23 +167,17 @@ async function runClaudeReview({ base, focus, adversarial, gitRoot }) {
   return { engine: 'Claude', ok: result.code === 0, output: result.code === 0 ? output : result.stderr };
 }
 
-async function runCodexReview({ base, focus, adversarial, gitRoot }) {
-  let diff;
-  try {
-    diff = getDiff(base, gitRoot);
-  } catch (err) {
-    return { engine: 'Codex', ok: false, output: err.message };
-  }
+async function runCodexReview({ base, focus, adversarial, gitRoot, diff }) {
   if (!diff.trim()) {
     return { engine: 'Codex', ok: true, output: 'No changes to review.' };
   }
 
   let result;
-  if (adversarial) {
+  if (adversarial || focus) {
     const prompt = [
-      'You are a senior staff engineer doing a read-only adversarial code review.',
+      'You are a senior staff engineer doing a read-only code review.',
+      adversarial ? 'Challenge design decisions, trade-offs, hidden assumptions, and failure modes. Be constructive but skeptical.' : '',
       focus ? `Focus: ${focus}` : '',
-      'Challenge design decisions, trade-offs, hidden assumptions, and failure modes.',
       'Categorize findings as Critical, Important, or Minor.',
       'For each finding include severity, file:line, evidence, why it matters, and a recommended fix.',
       'End with an overall verdict.',
@@ -193,9 +210,32 @@ async function review(options) {
     process.exit(1);
   }
 
+  if (options.base !== null && options.base.trim() === '') {
+    console.error('❌ --base requires a non-empty ref.');
+    process.exit(1);
+  }
+
+  if (!options.base && !hasCommits(gitRoot)) {
+    console.error('❌ This repository has no commits yet. Commit some changes before reviewing, or use --base <ref>.');
+    process.exit(1);
+  }
+
+  let diff;
+  try {
+    diff = getDiff(options.base, gitRoot);
+  } catch (err) {
+    console.error(`❌ ${err.message}`);
+    process.exit(1);
+  }
+
+  const untracked = options.base ? [] : getUntrackedFiles(gitRoot);
+  const untrackedWarning = untracked.length
+    ? `⚠️ ${untracked.length} untracked file(s) are not included in this review: ${untracked.join(', ')}`
+    : '';
+
   const [claudeResult, codexResult] = await Promise.all([
-    runClaudeReview({ ...options, gitRoot }),
-    runCodexReview({ ...options, gitRoot }),
+    runClaudeReview({ ...options, gitRoot, diff }),
+    runCodexReview({ ...options, gitRoot, diff }),
   ]);
 
   console.log('# Combined Claude + Codex Code Review\n');
@@ -207,6 +247,9 @@ async function review(options) {
   console.log(codexResult.ok ? codexResult.output : `Failed: ${codexResult.output}`);
   console.log('\n---\n');
   console.log('## Summary\n');
+  if (untrackedWarning) {
+    console.log(untrackedWarning);
+  }
   if (claudeResult.ok && codexResult.ok) {
     console.log('Both engines completed. Review the findings above and apply fixes in a separate step if needed.');
   } else {
@@ -215,17 +258,31 @@ async function review(options) {
   }
 }
 
-const { command, options } = parseArgs(process.argv);
+let command;
+let options;
+try {
+  ({ command, options } = parseArgs(process.argv));
+} catch (err) {
+  console.error(`❌ ${err.message}`);
+  console.error(USAGE);
+  process.exit(1);
+}
 
 switch (command) {
   case 'setup':
     setup();
     break;
   case 'review':
-    review(options);
+    review(options).catch((err) => {
+      console.error('❌ Unexpected error:', err.message);
+      process.exit(1);
+    });
     break;
   case 'adversarial-review':
-    review({ ...options, adversarial: true });
+    review({ ...options, adversarial: true }).catch((err) => {
+      console.error('❌ Unexpected error:', err.message);
+      process.exit(1);
+    });
     break;
   default:
     console.error(USAGE);
