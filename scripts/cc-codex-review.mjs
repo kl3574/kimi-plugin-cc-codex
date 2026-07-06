@@ -13,6 +13,8 @@ const KILL_GRACE_MS = 10 * 1000;
 const CONNECT_TIMEOUT_MS = Number(process.env.CCX_CONNECT_TIMEOUT_MS) || 5000;
 const MAX_UNTRACKED_BYTES = Number(process.env.CCX_MAX_UNTRACKED_BYTES) || 500 * 1024;
 const TOTAL_UNTRACKED_BUDGET_BYTES = Number(process.env.CCX_TOTAL_UNTRACKED_BUDGET_BYTES) || 1024 * 1024;
+const CLAUDE_BIN = process.env.CC_CLAUDE_BIN || 'claude';
+const CODEX_BIN = process.env.CC_CODEX_BIN || 'codex';
 
 function runSync(cmd, args, opts = {}) {
   return spawnSync(cmd, args, {
@@ -533,8 +535,8 @@ function checkCli(name, versionArgs, authCmd, authOk) {
 }
 
 function setup() {
-  const claude = checkCli('claude', ['--version'], ['auth', 'status'], (r) => r.status === 0);
-  const codex = checkCli('codex', ['--version'], ['login', 'status'], codexAuthOk);
+  const claude = checkCli(CLAUDE_BIN, ['--version'], ['auth', 'status'], (r) => r.status === 0);
+  const codex = checkCli(CODEX_BIN, ['--version'], ['login', 'status'], codexAuthOk);
   console.log(claude.message);
   console.log(codex.message);
   if (!claude.ok || !codex.ok) {
@@ -597,7 +599,7 @@ function checkProxy() {
 }
 
 async function probeClaude() {
-  const result = await runAsync('claude', [
+  const result = await runAsync(CLAUDE_BIN, [
     '-p', 'Reply exactly: RUNTIME-OK',
     '--output-format', 'text',
     '--bare',
@@ -614,7 +616,7 @@ async function probeClaude() {
 }
 
 async function probeCodex() {
-  const result = await runAsync('codex', [
+  const result = await runAsync(CODEX_BIN, [
     'exec',
     '-s', 'read-only',
     '--ignore-user-config',
@@ -679,8 +681,8 @@ async function doctor({ probeRuntime, base, focus, path: pathOption, unknown = [
   report(isWritableDir(kimiHome), 'Kimi Code home is writable', kimiHome);
 
   console.log('\n## External CLI checks');
-  const claude = checkCli('claude', ['--version'], ['auth', 'status'], (r) => r.status === 0);
-  const codex = checkCli('codex', ['--version'], ['login', 'status'], codexAuthOk);
+  const claude = checkCli(CLAUDE_BIN, ['--version'], ['auth', 'status'], (r) => r.status === 0);
+  const codex = checkCli(CODEX_BIN, ['--version'], ['login', 'status'], codexAuthOk);
   report(claude.ok, 'Claude CLI', claude.ok ? claude.message.replace('✅ ', '') : claude.message.replace('❌ ', ''));
   report(codex.ok, 'Codex CLI', codex.ok ? codex.message.replace('✅ ', '') : codex.message.replace('❌ ', ''));
 
@@ -749,7 +751,7 @@ async function runClaudeReview({ base, focus, adversarial, gitRoot, diff }) {
     fence,
   ].join('\n');
 
-  const result = await runAsync('claude', [
+  const result = await runAsync(CLAUDE_BIN, [
     '-p', promptHeader,
     '--output-format', 'text',
     '--bare',
@@ -804,7 +806,7 @@ async function runCodexReview({ base, focus, adversarial, gitRoot, diff }) {
   );
   const prompt = promptLines.join('\n');
 
-  const result = await runAsync('codex', [
+  const result = await runAsync(CODEX_BIN, [
     'exec',
     '-s', 'read-only',
     '--ignore-user-config',
@@ -879,8 +881,8 @@ async function review(options) {
     process.exit(1);
   }
 
-  const claude = checkCli('claude', ['--version'], ['auth', 'status'], (r) => r.status === 0);
-  const codex = checkCli('codex', ['--version'], ['login', 'status'], codexAuthOk);
+  const claude = checkCli(CLAUDE_BIN, ['--version'], ['auth', 'status'], (r) => r.status === 0);
+  const codex = checkCli(CODEX_BIN, ['--version'], ['login', 'status'], codexAuthOk);
   if (!claude.ok || !codex.ok) {
     console.error(claude.message);
     console.error(codex.message);
@@ -985,5 +987,6 @@ async function main() {
 
 main().catch((err) => {
   console.error('❌ Unexpected error:', err.message);
+  if (err.stack) console.error(err.stack);
   process.exit(1);
 });
