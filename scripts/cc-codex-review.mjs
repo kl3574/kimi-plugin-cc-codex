@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const USAGE = `Usage: cc-codex-review.mjs <setup|doctor|review|adversarial-review> [--base <ref>] [--focus <text>] [--path <file-or-dir>] [--probe-runtime]`;
 const REVIEW_TIMEOUT_MS = Number(process.env.CCX_REVIEW_TIMEOUT_MS) || 5 * 60 * 1000;
-const PROBE_TIMEOUT_MS = Number(process.env.CCX_PROBE_TIMEOUT_MS) || 10 * 1000;
+const PROBE_TIMEOUT_MS = Number(process.env.CCX_PROBE_TIMEOUT_MS) || 30 * 1000;
 const KILL_GRACE_MS = 10 * 1000;
 const CONNECT_TIMEOUT_MS = Number(process.env.CCX_CONNECT_TIMEOUT_MS) || 5000;
 const MAX_UNTRACKED_BYTES = Number(process.env.CCX_MAX_UNTRACKED_BYTES) || 500 * 1024;

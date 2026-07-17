@@ -97,4 +97,4 @@ Claude is invoked with `--permission-mode plan` (read-only tools only), and Code
 - Untracked files are included in the diff sent to both engines, up to 500 KB per file and 1 MB total across all untracked files.
 - Does **not** implement background execution (`--background`, `--wait`), rescue/transfer/status/result/cancel commands, or the review gate from `codex-plugin-cc`.
 - Skills and commands resolve the helper script via `PLUGIN_ROOT` using `KIMI_PLUGIN_ROOT`, `KIMI_CODE_HOME`, or the default `~/.kimi-code/plugins/managed/kimi-plugin-cc-codex` path.
-- This is a v0.1 local prototype.
+- This is an early-stage local prototype.
